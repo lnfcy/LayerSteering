@@ -1,0 +1,56 @@
+defaults:
+  - default
+  - _self_
+
+attn_implementation: eager
+
+training_datasets:
+  - name_or_path: yahma/alpaca-cleaned
+    train: 40000
+    test: 1000
+  - name_or_path: gsm8k
+    subset: main
+    train: 6000
+    test: 500
+  - name_or_path: EleutherAI/hendrycks_math
+    train: 5000
+    test: 500
+  - name_or_path: bigcode/self-oss-instruct-sc2-exec-filter-50k
+    train: 3000
+    test: 500
+  - name_or_path: arjunguha/mbpp
+    train: 374
+
+data_args:
+  _target_: src.utils.training.DataArguments
+  num_proc: 8
+  max_length: 2048
+  truncation: filter
+
+training_args:
+  _target_: src.utils.training.LensTrainingArguments
+  report_to: tensorboard
+  overwrite_output_dir: true
+  remove_unused_columns: false
+  seed: 42
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 2e-4
+  lr_scheduler_type: warmup_stable_decay
+  lr_scheduler_kwargs:
+    min_lr_ratio: 0.1
+  warmup_ratio: 0.05
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  decay_ratio: 0.1
+  weight_decay: 1e-3
+  bf16: true
+  num_train_epochs: 1
+  logging_steps: 10
+  eval_on_start: false
+  eval_strategy: steps
+  eval_steps: 0.1
+  save_strategy: "no"
+  save_steps: 0.25
+  save_only_model: true

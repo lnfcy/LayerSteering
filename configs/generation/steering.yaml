@@ -1,0 +1,15 @@
+# extra generation configs will be loaded from the model config during runtime
+strategy: steering
+
+gen_length: null
+block_length: null
+stop_until_eos: false
+
+target_conf_threshold: 0.9
+commit_conf_threshold: 0.0
+decode_threshold_regular: 0.9
+tuned_lens_path: null
+single_token_hidden_bank_paths: null
+prev_target_prob_threshold: 0.0
+start_block: 0
+steering_token_filter_mode: Basic

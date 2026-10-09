@@ -1,0 +1,120 @@
+import inspect
+import os
+import hydra
+import json
+import torch
+
+from contextlib import nullcontext
+from pathlib import Path
+from omegaconf import DictConfig, OmegaConf
+from typing import cast
+from hydra.core.hydra_config import HydraConfig
+from loguru import logger
+from lm_eval.evaluator import simple_evaluate
+from lm_eval.tasks import TaskManager
+from pprint import pformat
+
+from src.utils import pre_initialize, Timer, sympy_antlr_patcher, load_eval_model
+
+
+def serializer(o):
+    if inspect.isfunction(o):
+        try:
+            source_code = inspect.getsource(o)
+            return source_code
+        except (TypeError, OSError):
+            return f"<uninspectable function: {o.__name__}>"
+
+    if isinstance(o, torch.Tensor):
+        if o.numel() == 1:
+            return o.item()
+        else:
+            return o.tolist()
+
+    return f"<unserializable object of type {o.__class__.__name__}>"
+
+
+def overwrite_eval_task(cfg: DictConfig):
+    eval_args = cast(dict, OmegaConf.to_container(cfg.eval_args, resolve=True))
+
+    task_manager = TaskManager(
+        include_path=[
+            str(path)
+            for dirname in os.listdir(Path(__file__).parent / "tasks")
+            if os.path.isdir(path := Path(__file__).parent / "tasks" / dirname)
+        ]
+    )
+    eval_args["task_manager"] = task_manager
+
+    local_task_aliases = {
+        "humaneval_instruct": "humaneval_instruct_local",
+    }
+
+    tasks = eval_args.get("tasks")
+    if isinstance(tasks, str):
+        eval_args["tasks"] = ",".join(
+            local_task_aliases.get(task.strip(), task.strip())
+            for task in tasks.split(",")
+            if task.strip()
+        )
+
+    return eval_args
+
+
+@hydra.main(config_path="configs", config_name="eval", version_base=None)
+def main(cfg: DictConfig) -> None:
+    pre_initialize(cfg)
+    model = load_eval_model(cfg)
+    output_dir = HydraConfig.get().runtime.output_dir
+
+    patcher_ctx = sympy_antlr_patcher if cfg.dataset.name == "math-500" else nullcontext
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+    with patcher_ctx():
+        results = simple_evaluate(
+            model=model,
+            use_cache=(
+                os.path.join(output_dir, "response") if cfg.use_eval_cache else None
+            ),
+            apply_chat_template=bool(
+                getattr(getattr(model, "tokenizer", None), "chat_template", None)
+            ),
+            **overwrite_eval_task(cfg),
+        )
+
+    peak_memory_allocated = (
+        torch.cuda.max_memory_allocated() / (1024**3)
+        if torch.cuda.is_available()
+        else 0.0
+    )
+
+    results_path = os.path.join(output_dir, "results.json")
+
+    if model.accelerator.is_main_process:
+        results = results or {}
+        metrics = dict(model.metrics)
+        if metrics.get("tps") is not None and metrics.get("throughput") is not None:
+            metrics["peak_memory_allocated_GB"] = peak_memory_allocated
+            logger.info(pformat(results["results"]))
+            logger.info(
+                f"Throughput: {metrics['throughput']:.2f} tokens/sec, "
+                f"Tokens per step: {metrics['tps']:.2f} tokens/step "
+                f"(full: {metrics['full_throughput']:.2f} tokens/sec, {metrics['full_tps']:.2f} tokens/step), "
+                f"Latency: {metrics['latency']:.2f} s, "
+                f"Total time: {metrics['total_time']:.2f} s, "
+                f"Avg input length: {metrics['input_length']:.2f} tokens, "
+                f"Peak memory allocated: {peak_memory_allocated:.2f} GB"
+            )
+            results.update(metrics)
+
+        with open(results_path, "w") as f:
+            json.dump(results, f, indent=2, default=serializer)
+
+        logger.info(f"Results saved to {results_path}")
+
+        for timer in Timer.cumulative:
+            logger.info(f"{timer} time: {Timer(timer).cumulative_s:.2f} seconds")
+
+
+if __name__ == "__main__":
+    main()
