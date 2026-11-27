@@ -15,6 +15,8 @@ cp .env.example .env
 
 ## Prepare
 
+The pretrained d-Tuned Lens weights for both models are available in [checkpoints](checkpoints/README.md), with download and restoration instructions.
+
 Train the d-Tuned Lens for LLaDA Instruct:
 
 ```bash
